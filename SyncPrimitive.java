@@ -20,26 +20,24 @@ public class SyncPrimitive implements Watcher {
 
 	static ZooKeeper zk = null;
 	static Integer mutex;
-	static String root;
+	static String root = "/root";
+	static String address;
 
-	SyncPrimitive(ZooKeeper zk, String root, Integer mutex) {
-		if (SyncPrimitive.zk == null) {
-			SyncPrimitive.zk = zk;
-			SyncPrimitive.mutex = mutex;
-			SyncPrimitive.root = root;
-		}
+	SyncPrimitive(String address) {
+		SyncPrimitive.address = address;
+		if (zk == null) {
+            try {
+                System.out.println("Starting ZK:");
+                zk = new ZooKeeper(address, 3000, this);
+                mutex = new Integer(-1);
+                System.out.println("Finished starting ZK: " + zk);
+            } catch (Exception e) {
+                System.out.println(e.toString());
+                zk = null;
+            }
+        }
 	}
 	
-	public static void CreateEphemeralNode(String path, byte[] data) throws Exception {
-		if (SyncPrimitive.zk != null)
-			SyncPrimitive.zk.create(path, data, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
-	}
-
-    public static void UpdateNode(String path, byte[] data) throws Exception {
-    	if (SyncPrimitive.zk != null)
-    		SyncPrimitive.zk.setData(path, data, zk.exists(path, true).getVersion());
-    }
-
     public static void DeleteNode(String path) throws Exception {
     	if (SyncPrimitive.zk != null)
     		SyncPrimitive.zk.delete(path, zk.exists(path, true).getVersion());
@@ -57,24 +55,19 @@ public class SyncPrimitive implements Watcher {
 	static public class Barrier extends SyncPrimitive {
 		int size;
 		String name;
+		String barriersRoot;
 
-		/**
-		 * Barrier constructor
-		 *
-		 * @param address
-		 * @param root
-		 * @param size
-		 */
-		Barrier(ZooKeeper zk, String root, Integer mutex, int size) {
-			super(zk, root, mutex);
+		Barrier(int size) {
+			super(SyncPrimitive.address);
 			this.size = size;
 
 			// Create barrier node
 			if (zk != null) {
+				barriersRoot = root + "/barriers";
 				try {
-					Stat s = zk.exists(root, false);
+					Stat s = zk.exists(barriersRoot, false);
 					if (s == null) {
-						zk.create(root, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+						zk.create(barriersRoot, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
 					}
 				} catch (KeeperException e) {
 					System.out.println("Keeper exception when instantiating queue: " + e.toString());
@@ -99,10 +92,11 @@ public class SyncPrimitive implements Watcher {
 		 * @throws InterruptedException
 		 */
 		boolean enter() throws Exception {
-			zk.create(root + "/" + name, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+			String barrierNode = zk.create(barriersRoot + "/" + name, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+			System.out.println("BARRIER UP: " + barrierNode);
 			while (true) {
 				synchronized (SyncPrimitive.mutex) {
-					List<String> list = zk.getChildren(root, true);
+					List<String> list = zk.getChildren(barriersRoot, true);
 					if (list.size() < size) {
 						SyncPrimitive.mutex.wait();
 					} else {
@@ -119,26 +113,46 @@ public class SyncPrimitive implements Watcher {
 		 * @throws KeeperException
 		 * @throws InterruptedException
 		 */
-		boolean leave() throws Exception {
-			zk.delete(root + "/" + name, 0);
+		boolean leave(String tokenNode) throws Exception {
+			//zk.delete(barrierNode, 0);
 			while (true) {
 				synchronized (SyncPrimitive.mutex) {
-					List<String> list = zk.getChildren(root, true);
+					List<String> list = zk.getChildren(barriersRoot, true);
+					// verify barriers and date
 					if (list.size() > 0) {
-						// verify date
-						for (String zNode : list) {
-							Stat stat = zk.exists(zNode, false);
-							if (stat != null) {
-								String dateStr = new String(zk.getData(zNode, false, stat), "UTF-8");
+						System.out.println("More than one barrier stills up, checking...");	
+						for (String n : list) {
+							String nodePath = barriersRoot + "/" + n;
+							Stat stat = zk.exists(nodePath, false);
+							if (stat != null) {							
+								// Barriers could have more conditions, but
+								// leaving just date expiration for this project			
+								String dateStr = new String(zk.getData(tokenNode, false, stat), "UTF-8");
 								SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 								if (new Date().after(sdf.parse(dateStr))) {
-									SyncPrimitive.DeleteNode(zNode);
-									return true;
+									System.out.print("Token expirated! Processing... ");
+									
+									// Delete the barrier
+									SyncPrimitive.DeleteNode(nodePath);
+									System.out.println("Deleted Barrier Node: " + nodePath);
+
+									// Finally delete the token...
+									SyncPrimitive.DeleteNode(tokenNode);
+									System.out.println("Deleted the Expired Token Node: " + tokenNode);
+
+									break;
+						
+								} else {
+									System.out.println("Not expirated yet!");
+									return false;
 								}
 							}
 						}
-						SyncPrimitive.mutex.wait();
+						// left barrier
+						return true;
 					} else {
+						// no barriers left
+						System.out.println("No more barriers!");
 						return true;
 					}
 				}
@@ -151,16 +165,18 @@ public class SyncPrimitive implements Watcher {
 	 */
 	static public class Lock extends SyncPrimitive {
 		String pathName;
-
-		Lock(ZooKeeper zk, String root, Integer mutex) {
-			super(zk, root, mutex);
+		String locksRoot;
+		
+		Lock() {
+			super(SyncPrimitive.address);
 
 			// Create ZK node name
 			if (zk != null) {
+				locksRoot = root + "/locks";
 				try {
-					Stat s = zk.exists(root, false);
+					Stat s = zk.exists(locksRoot, false);
 					if (s == null) {
-						zk.create(root, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+						zk.create(locksRoot, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
 					}
 				} catch (KeeperException e) {
 					System.out.println("Keeper exception when instantiating queue: " + e.toString());
@@ -172,7 +188,7 @@ public class SyncPrimitive implements Watcher {
 
 		boolean lock() throws KeeperException, InterruptedException {
 			// Step 1
-			pathName = zk.create(root + "/lock-", new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+			pathName = zk.create(locksRoot + "/lock-", new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
 			System.out.println("My path name is: " + pathName);
 			// Steps 2 to 5
 			return testMin();
@@ -180,9 +196,9 @@ public class SyncPrimitive implements Watcher {
 
 		boolean testMin() throws KeeperException, InterruptedException {
 			while (true) {
-				Integer suffix = new Integer(pathName.substring(12));
+				Integer suffix = new Integer(pathName.substring(17));
 				// Step 2
-				List<String> list = zk.getChildren(root, false);
+				List<String> list = zk.getChildren(locksRoot, false);
 				Integer min = new Integer(list.get(0).substring(5));
 				System.out.println("List: " + list.toString());
 				String minString = list.get(0);
@@ -211,8 +227,8 @@ public class SyncPrimitive implements Watcher {
 					}
 				}
 				// Exists with watch
-				Stat s = zk.exists(root + "/" + maxString, this);
-				System.out.println("Watching " + root + "/" + maxString);
+				Stat s = zk.exists(locksRoot + "/" + maxString, this);
+				System.out.println("Watching " + locksRoot + "/" + maxString);
 				// Step 5
 				if (s != null) {
 					// Wait for notification
@@ -247,36 +263,60 @@ public class SyncPrimitive implements Watcher {
 			try {
 				Thread t = new Thread(new Runnable() {
 					public void run() {
+						
+						System.out.println("Executing Lock Compute Thread....");
 
 						// create sequencial node with date as metadata
 						SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-						// actual date plus one minute
-						String dateStr = sdf.format(new Date(new Date().getTime() + 60000));
+						
+						Date currentTime = new Date();
+						System.out.println("Current time: " + sdf.format(currentTime));
+						
+						// actual date plus 20 seconds minute
+						String dateStr = sdf.format(new Date(currentTime.getTime() + 20000));
+						System.out.println("Expiration time: " + dateStr);
 
 						try {
-							SyncPrimitive.CreateEphemeralNode(SyncPrimitive.root, dateStr.getBytes("UTF-8"));
+							String tokenRoot = SyncPrimitive.root + "/tokens";
+							Stat s = zk.exists(tokenRoot, false);
+							if (s == null) {
+								zk.create(tokenRoot, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+							}
+
+							// create the unique node
+							String tokenNode = zk.create(tokenRoot + "/TOKEN-", dateStr.getBytes("UTF-8"), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+							System.out.println("Created the following TokenNode: " + tokenNode);
 						
-							// barrier the node deletion until date has passed
-							Barrier b = new Barrier(zk, SyncPrimitive.root, 1, SyncPrimitive.mutex); // barrier of 1 node
+							// Enter the barrier and only leave when the token expires
+							Barrier b = new Barrier(1); // barrier of 1 node
 							b.enter();
 							
-							while (!b.leave()) {
+							while (!b.leave(tokenNode)) {
+								System.out.println("Waiting to leave the barrier...");
 								try {
-									Thread.sleep(30000);
-								} catch (InterruptedException e) {}
+									Thread.sleep(5000);
+								} catch (InterruptedException e) {
+									
+								}
+					
 							}
 						
 							System.out.println("Left barrier and deleted node");
+							System.out.println("-- END OF CLIENT SESSION --");
+							
+							System.exit(0);
+							
 						} catch (Exception e) {
-							System.out.println("Error creating node!");
+							System.out.println("Exception in processing: " + e);
 						}
 					}
 				});
 				t.start();
 				
-				// Exits, which releases the ephemeral node (Unlock operation)
+				// delete the node to unlock
 				System.out.println("Lock released!");
-				System.exit(0);
+				SyncPrimitive.DeleteNode(pathName);
+				
 			} catch (Exception e) {
 				e.printStackTrace();
 				System.out.println("Error, lock released!");
@@ -292,18 +332,22 @@ public class SyncPrimitive implements Watcher {
 		String leader;
 		String id; // Id of the leader
 		String pathName;
+		String electionRoot;
 
-		Leader(ZooKeeper zk, String root, String leader, int id, Integer mutex) {
-			super(zk, root, mutex);
+		Leader(String leader, int id) {
+			super(SyncPrimitive.address);
+			
+			electionRoot = root + "/election";
+			
 			this.leader = leader;
 			this.id = new Integer(id).toString();
 			// Create ZK node name
 			if (zk != null) {
 				try {
 					// Create election znode
-					Stat s1 = zk.exists(root, false);
+					Stat s1 = zk.exists(electionRoot, false);
 					if (s1 == null) {
-						zk.create(root, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+						zk.create(electionRoot, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
 					}
 					// Checking for a leader
 					Stat s2 = zk.exists(leader, false);
@@ -321,17 +365,17 @@ public class SyncPrimitive implements Watcher {
 		}
 
 		boolean elect() throws KeeperException, InterruptedException {
-			this.pathName = zk.create(root + "/n-", new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+			this.pathName = zk.create(electionRoot + "/n-", new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
 			System.out.println("My path name is: " + pathName + " and my id is: " + id + "!");
 			return check();
 		}
 
 		boolean check() throws KeeperException, InterruptedException {
-			Integer suffix = new Integer(pathName.substring(12));
+			Integer suffix = new Integer(pathName.substring(17));
 			while (true) {
-				List<String> list = zk.getChildren(root, false);
+				List<String> list = zk.getChildren(electionRoot, false);
 				Integer min = new Integer(list.get(0).substring(5));
-				System.out.println("List: " + list.toString());
+				System.out.println("List (root/election/): " + list.toString());
 				String minString = list.get(0);
 				for (String s : list) {
 					Integer tempValue = new Integer(s.substring(5));
@@ -357,8 +401,8 @@ public class SyncPrimitive implements Watcher {
 					}
 				}
 				// Exists with watch
-				Stat s = zk.exists(root + "/" + maxString, this);
-				System.out.println("Watching " + root + "/" + maxString);
+				Stat s = zk.exists(electionRoot + "/" + maxString, this);
+				System.out.println("Watching " + electionRoot + "/" + maxString);
 				// Step 5
 				if (s != null) {
 					// Wait for notification
@@ -367,7 +411,6 @@ public class SyncPrimitive implements Watcher {
 			}
 			System.out.println(pathName + " is waiting for a notification!");
 			return false;
-
 		}
 
 		synchronized public void process(WatchedEvent event) {
@@ -397,16 +440,73 @@ public class SyncPrimitive implements Watcher {
 		}
 
 		void compute() {
-			System.out.println("I will die after 10 seconds!");
-			try {
-				new Thread();
-				Thread.sleep(10000);
-				System.out.println("Process " + id + " died!");
-			} catch (InterruptedException e) {
-				e.printStackTrace();
+			// try again to get the lock now that nodes were deleted
+			// and probably there is a new leader
+	        Lock lock = new Lock();  
+            try {
+				if (lock.lock()) {
+					// lock compute shall execute the token methods
+					System.out.println("Going to compute the lock execution...");
+					lock.compute();		            
+				} else {
+					System.out.println("Couldn't get a lock... wait");
+				    while (true) {
+				        // Waiting for a notification
+				    }
+				}
+			} catch (Exception e) {
+				System.out.println("Error: " + e);
 			}
-			System.exit(0);
 		}
 	}
+
+	public static void main(String args[]) {
+        // arg[0]: e.g. "localhost"
+        new SyncPrimitive(args[0]);
+        String leaderPath = "/leader";
+
+        // Check for a leader
+        System.out.println("Checking for a leader...");
+        try {
+			Stat s = zk.exists(leaderPath, false);
+			if (s != null) {
+				byte[] idLeader = zk.getData(leaderPath, false, s);
+				System.out.println("Leader exists: " + new String(idLeader));
+			} 
+			else {
+				// Not found, elect a leader to start
+				Random rand = new Random();
+     			int r = rand.nextInt(1000000);
+        		Leader leader = new Leader(leaderPath, r);
+        		boolean success = leader.elect();			
+				if (success) {
+					System.out.println("New Leader elected!");
+				} else {
+					System.out.println("Couldn't elect a leader, wait for notification of mutex");
+					while (true) {
+						// Waiting for a notification (will exec compute() when mutex notify)
+					}
+				}
+			}
+
+			// Get the lock if we reached this point of code
+			System.out.println("Now let's try to get the lock...");
+	        Lock lock = new Lock();  
+            if (lock.lock()) {
+            	// lock compute shall execute the token methods
+            	System.out.println("Going to compute the lock execution...");
+            	lock.compute();
+            } else {
+            	System.out.println("Couldn't get a lock... wait");
+                while (true) {
+                    // Waiting for a notification of mutex
+                }
+            }
+		} catch (KeeperException e) {
+			e.printStackTrace();
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+    }
 
 }
