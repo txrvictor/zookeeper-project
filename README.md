@@ -4,9 +4,13 @@ Projeto final de Sistemas Distribuídos.
 Aplicação *ZooKeeper* simples para a consolidação de conceitos vistos em laboratório.
 
   > Barriers;
+
   > Queues;
+
   > Locks;
+
   > Leader Election.
+
 
 ### Breve Explicação
 
@@ -32,5 +36,3 @@ Executar um servidor *ZooKeeper* devidamente configurado, podendo haver um *ense
 $ cd <path_da_pasta_projeto>
 $ compile_and_run.bat
 ```
-
-
