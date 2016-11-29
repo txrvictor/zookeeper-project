@@ -11,6 +11,7 @@ Aplicação *ZooKeeper* simples para a consolidação de conceitos vistos em lab
 
   > Leader Election.
 
+
 ### Breve Explicação
 
 A aplicação proposta foi feita de forma simplificada e visa a criação de *znodes* com IDs únicos que durem por um tempo limitado. A ideia pode ser utilizada tanto criar uma chave/*token* única que expira em certa data, ou mesmo para criar URLs de serviços que devem possuir um tempo de vida limitado. Para tal, foi criado um projeto em *Java* que pode ser executado via linha de comando ou execução do arquivo *.bat* encontrado no repositório.
@@ -32,7 +33,5 @@ Executar um servidor *ZooKeeper* devidamente configurado, podendo haver um *ense
 ```sh
 $ cd <path_da_pasta_projeto>
 $ compile_and_run.bat
+
 ```
-
-
-
