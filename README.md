@@ -26,8 +26,6 @@ O *znode* criado que simula uma chave ou *token* contém uma data de expiração
   - Remover barreira e *znode* expirado;
   - Encerrar aplicação.
 
-This text you see here is *actually* written in Markdown! To get a feel for Markdown's syntax, type some text into the left window and watch the results in the right.
-
 ### Execução
 
 Executar um servidor *ZooKeeper* devidamente configurado, podendo haver um *ensemble* de servidores para testar a funcionalidade de *Leader Election*. Após garantir que o servidor estiver disponível, pode-se executar o arquivo **compile_and_run.bat** ou executar o seguinte código no terminal de comando (dentro da pasta do projeto):
