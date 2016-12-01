@@ -31,6 +31,12 @@ public class SyncPrimitive implements Watcher {
                 zk = new ZooKeeper(address, 3000, this);
                 mutex = new Integer(-1);
                 System.out.println("Finished starting ZK: " + zk);
+
+                // check for the root node and create it if needed
+                Stat s = zk.exists(root, false);
+				if (s == null)
+					zk.create(root, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+				
             } catch (Exception e) {
                 System.out.println(e.toString());
                 zk = null;
